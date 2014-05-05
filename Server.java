@@ -136,6 +136,275 @@ class Account {
     }
 }
 
+class NCache
+{
+    private Account acc;
+    private int reporting;
+    private int initial;
+    private boolean read;
+    private boolean write;
+    
+    private boolean ISOPENED;
+    public int ACCNUM;
+    public char name;
+    
+    public NCache(Account ref, int num)
+    {
+        acc = ref;
+        reporting = -1;
+        initial = -1;
+        read = false;
+        write = false;
+        ISOPENED = false;
+        ACCNUM = num;
+        name = (char) (num + 'A');
+    }
+    
+    public void open() throws TransactionAbortException
+    {
+        //System.out.print(new Character((char) (i + 'A')) + ": ");
+        //open if using read or write access... or both!
+        if(read)
+        {
+            acc.open(false);
+            //System.out.println("Account " + name + " opened for reading in Thread " + Thread.currentThread().getName());
+        }
+        if(write)
+        {
+            acc.open(true);
+            //System.out.println("Account " + name + " opened for writing in Thread " + Thread.currentThread().getName());
+        }  
+        if(read || write)
+        {
+            
+            ISOPENED = true;
+        }
+    }
+    
+    public void verify() throws TransactionAbortException
+    {
+        //verifies that the initial value is in fact correct
+        if(read && ISOPENED)
+        {
+            acc.verify(initial);
+            //System.out.println("Account " + name + " verified for reading in Thread " + Thread.currentThread().getName());
+        }
+        
+    }
+    
+    public void commit()
+    {
+        if(write && ISOPENED)
+        {
+            acc.update(reporting);
+            //System.out.println("Account " + name + " updated to value " + reporting + " in Thread " + Thread.currentThread().getName());
+        }
+    }
+    
+    public void close()
+    {
+        if(ISOPENED)
+        {
+            acc.close();
+            //System.out.println("Account " + name + " closed in Thread " + Thread.currentThread().getName());
+        }
+        read = false;
+        write = false;
+        ISOPENED = false;
+    }
+    
+    public void setCurrentValue(int other)
+    {
+        write = true;
+        
+        reporting = other;
+    }
+    
+    public int getCurrentValue()
+    {
+        /*
+        
+        */
+        if(read == false && write == false)
+        {
+            // Never been opened before. What we're looking for is the initial value. Pull them
+            reporting = acc.peek();
+            initial = reporting;
+            read = true;
+            return initial;
+        }
+        
+        //Otherwise we've already set the reporting value via this function or setCurrentValue
+        return reporting;
+    }  
+}
+
+class NWorker implements Runnable
+{
+    private static final int A = constants.A;
+    private static final int Z = constants.Z;
+    private static final int numLetters = constants.numLetters;
+    
+    private final NCache[] cachedAccounts;
+    private final String transaction;
+    
+    public NWorker(Account[] allAccounts, String trans)
+    {
+        cachedAccounts = new NCache[allAccounts.length];
+        for(int i = 0; i < allAccounts.length; i++)
+        {
+            cachedAccounts[i] = new NCache(allAccounts[i], i);
+        }
+        
+        transaction = trans;
+    }
+    
+    public void abort()
+    {
+        //System.out.println("Aborting Transaction " + transaction);
+        
+        for(NCache n : cachedAccounts)
+        {
+            n.close();
+        }
+    }
+    
+    public void run()
+    {
+        //TODO: Replace this with a random number.
+        int i = 1;
+        
+        while(true)
+        {
+            try
+            {
+                doRun();
+                return;
+            }
+            catch(TransactionAbortException e)
+            {
+                //System.out.println("Failure on transaction: " + transaction);
+                try
+                {
+                    Thread.sleep(100*i);
+                    i += 1;
+                }
+                catch(InterruptedException f)
+                {
+                    ;;;
+                }
+            }
+        }
+    }
+    
+    public void doRun() throws TransactionAbortException
+    {
+        String[] commands = transaction.split(";");
+        
+        for(String command : commands)
+        {
+            String[] words = command.trim().split("\\s");
+            
+            if(words.length < 3)
+                throw new InvalidTransactionError();
+            if(!words[1].equals("="))
+                throw new InvalidTransactionError();
+            if(words.length%2 == 0)
+                throw new InvalidTransactionError();
+            
+            NCache lhs = parseCache(words[0]);
+            
+            int workingSum = 0;
+            
+            workingSum = parseValue(words[2]);
+            
+            for(int j = 3; j < words.length; j += 2)
+            {
+                if(words[j].equals("+"))
+                {
+                    workingSum += parseValue(words[j+1]);
+                }
+                else if(words[j].equals("-"))
+                {
+                    workingSum -= parseValue(words[j+1]);
+                }
+                else
+                    throw new InvalidTransactionError();
+            }
+            
+            lhs.setCurrentValue(workingSum);
+        }
+        
+        //ALL TRANSACTIONS DONE
+        
+        //phase 1: open/Verify
+        for(int i =0; i < cachedAccounts.length; i++)
+        {
+            //System.out.println("Opening: " + i);
+            try
+            {
+                cachedAccounts[i].open();
+                cachedAccounts[i].verify();
+            }
+            catch(TransactionAbortException e)
+            {
+                //System.out.println("ABORT OCCURED");
+                this.abort();
+                throw e;
+            }
+        }
+        
+        //phase 2: Commit/close
+        for(int i = 0; i < cachedAccounts.length; i++)
+        {
+            //System.out.println("Commiting to: " + i);
+            cachedAccounts[i].commit();
+            cachedAccounts[i].close();
+        }
+        
+        System.out.println("Commit: " + transaction);
+        
+    }
+    
+    private NCache parseCache(String name)
+    {
+        int accountNum = (int) (name.charAt(0)) - (int) 'A';
+        
+        if(accountNum < A || accountNum > Z)
+            throw new InvalidTransactionError();
+        
+        NCache acc = cachedAccounts[accountNum];
+        
+        for(int i = 1; i < name.length(); i++)
+        {
+            if(name.charAt(i) != '*')
+                throw new InvalidTransactionError();
+            
+            accountNum = acc.getCurrentValue() % numLetters;
+            acc = cachedAccounts[accountNum];
+        }
+        
+        return acc;
+    }
+    
+    private int parseValue(String name)
+    {
+        int rval; 
+        if(name.charAt(0) >= '0' && name.charAt(0) <= '9')
+        {
+            rval = new Integer(name).intValue();
+        }
+        else
+        {
+            NCache chk = parseCache(name);
+            rval = chk.getCurrentValue();
+        }
+        
+        return rval;
+    }
+    
+}
+
 /*
 AccountCache:
     - Primary method for caching account values 
@@ -383,7 +652,7 @@ class myWorker implements Runnable
             {
                 if(accountCache[i].write_access)
                 {
-                    System.out.println(head + " Writing to " + (A + i));
+                    //System.out.println(head + " Writing to " + (A + i));
                     accounts[i].update(accountCache[i].working_val);
                     
                 }
@@ -392,7 +661,7 @@ class myWorker implements Runnable
             }
         }
         
-        System.out.println("commit: " + transaction);
+        //System.out.println("commit: " + transaction);
         
         return;
     }
@@ -612,7 +881,7 @@ public class Server {
     private static final int numLetters = constants.numLetters;
     private static Account[] accounts;
     
-    private static final Executor exec = Executors.newFixedThreadPool(3);
+    private static final ExecutorService exec = Executors.newFixedThreadPool(3);
     
 
     private static void dumpAccounts() {
@@ -651,22 +920,34 @@ public class Server {
             Worker w = new Worker(accounts, line);
             w.run();
         }
-        */
+        
         while((line = input.readLine()) != null)
         {
             myWorker w = new myWorker(accounts, line);
             exec.execute(w);
         }
+*/
+        
+        while((line = input.readLine()) != null)
+        {
+            NWorker w = new NWorker(accounts, line);
+            exec.execute(w);
+        }
+         
+        exec.shutdown();
         
         try{
-            Thread.sleep(10000);
+            exec.awaitTermination(30, TimeUnit.SECONDS);
         }
         catch(Exception e)
         {
-            ;
+            System.out.println("Term failed");
         }
 
+        
+        
         System.out.println("final values:");
         dumpAccounts();
+        
     }
 }
